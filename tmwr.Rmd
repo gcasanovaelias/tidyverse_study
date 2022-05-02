@@ -1,0 +1,432 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidymodels)
+
+data(ames)
+
+ames <- mutate(ames, Sale_Price = log10(Sale_Price))
+
+set.seed(502)
+ames_split <- initial_split(ames, prop = 0.80, strata = Sale_Price)
+ames_train <- training(ames_split)
+ames_test  <-  testing(ames_split)
+
+lm_model <- linear_reg() %>% set_engine("lm")
+```
+
+# *6 Fitting Models with parsnip*
+
+The parsnip package can be used for **defining** and **fitting** the model providing a common interface for models across different R packages using a standard syntax. Following the tidyverse ecosystem principle that a function should return values that are *predictable*, *consistent* and *unsurprising.* This way, the interface and resulting model objects have always a predictable (tidy) structure.
+
+### *Model specifications*
+
+The approach to specifying a model is intended to be more unified across different models through the application of different specifications:
+
+1.  ***Type** of model*: Type of model based on the mathematical structure
+2.  *Model **engine***: The software package
+3.  ***Mode** of the model*: Type of prediction outcome
+
+```{r}
+
+(lm_model <- 
+    # Type
+    linear_reg() %>%
+    # Engine
+    set_engine("lm") %>% 
+    # Type
+    set_mode("regression"))
+
+```
+
+## *Fitting the model*
+
+The parsnip package allows the user to be indifferent to the interface of the **underlying** model: you can always use a formula or `x`/`y` interface even with the modelling package´s function innate constrains
+
+Once the model has been specified the estimation can be done with either:
+
+-   `fit()`: Using a formula
+
+-   `fit_xy()`: Using `x`/`y` interface (data already pre processed)
+
+We can use the `translate()` function to obtain details on how **parsnip** converts the code to the package's syntax.
+
+```{r}
+
+# Translation
+lm_model %>% translate()
+
+# Formula fitting
+(lm_form_fit <- 
+  lm_model %>% 
+  # Recall that Sale_Price has been pre-logged
+  fit(Sale_Price ~ Longitude + Latitude, data = ames_train))
+
+# x / y fitting
+(lm_xy_fit <- 
+  lm_model %>% 
+  fit_xy(
+    x = ames_train %>% select(Longitude, Latitude),
+    y = ames_train %>% pull(Sale_Price)
+  ))
+
+```
+
+Modelling functions in **parsnip** separate model arguments into two categories:
+
+-   *Main arguments* are available across engines due to being more commonly used. They are specified in the model **type** function.
+
+-   *Engine arguments* are specific to a particular engine and are used more rarely. They are specified in `set_engine()`.
+
+```{r Modeling arguments example}
+
+rand_forest(
+  # Main arguments are specified in the model type
+  trees = 1000,
+  min_n = 5) %>%
+  set_engine(engine = "ranger",
+             # Engine arguments are specifies along with the engine
+             verbose = TRUE) %>%
+  set_mode("regression") 
+
+```
+
+### *Use the model results*
+
+With the created and fitted model we obtain a ***parsnip model object*** that we can use in a variety of ways or we can extract the fitted engine model contained in it through the `extract_fit_engine()` function. This way, normal methods can be applied to this object.
+
+> **IMPORTANT**: Never make predictions with the `fit` native object obtained with the `extract_fit_engine()`, one should only make predictions with the **parsnip model object** so incorrect predictions can be avoided if the data were preprocessed in any way. This is due because the `predict()` function does not know if the data has been through some transformations prior to running the model.
+
+```{r}
+# Optional: extraction of the fit engine
+lm_fit %>% extract_fit_engine() %>% glimpse()
+
+lm_fit %>% extract_fit_engine() %>% summary() %>% glimpse()
+```
+
+### *Make predictions*
+
+The format of values returned from `predict()` diverges from conventional R modelling functions in that:
+
+1.  The results are always a **tibble**.
+2.  The **column names** of the tibble are always predictable.
+3.  There are always **as many rows** in the tibble as there are in the **input data set**.
+4.  The **row order** of the predictions are always the same as the original data.
+
+These rules make it easier to **merge predictions** with the **original data**.
+
+```{r}
+
+# Predictions on test data (w/ pred_intervals)
+ames_test_small %>%
+    select(Sale_Price) %>%
+    bind_cols(
+      predict(
+        object = lm_fit, 
+        new_data = ames_test_small),
+      predict(
+        object = lm_fit,
+        new_data = ames_test_small,
+        type = "pred_int"
+      )
+    ) %>% mutate(
+      .resid = Sale_Price - .pred
+    )
+
+```
+
+```{r Summary}
+
+library(tidymodels)
+
+data(ames)
+
+ames <- mutate(ames, Sale_Price = log10(Sale_Price))
+
+set.seed(502)
+ames_split <- initial_split(ames, prop = 0.80, strata = Sale_Price)
+ames_train <- training(ames_split)
+ames_test  <-  testing(ames_split)
+
+# Model
+(lm_fit <- linear_reg() %>%
+    set_engine("lm") %>% 
+    fit(
+      formula = Sale_Price ~ Longitude + Latitude, 
+      data = ames_train))
+
+# Optional: extraction of the fit engine
+lm_fit %>% extract_fit_engine() %>% glimpse()
+
+lm_fit %>% extract_fit_engine() %>% summary() %>% glimpse()
+
+
+# Predictions on test data (w/ pred_intervals)
+ames_test_small %>%
+    select(Sale_Price) %>%
+    bind_cols(
+      predict(
+        object = lm_fit, 
+        new_data = ames_test_small),
+      predict(
+        object = lm_fit,
+        new_data = ames_test_small,
+        type = "pred_int"
+      )
+    ) %>% mutate(
+      .resid = Sale_Price - .pred
+    )
+
+
+```
+
+# *7 A Model Workflow*
+
+A model workflow **encapsulates** the major pieces of the modelling process improving the organization and adequate methodology application since it is a **single point** of **entry** to the estimation components of a data analysis.
+
+***Where does the model begin and end?*** Conventionally it is thought that a model refers only to the structural equation that relates predictors and the outcomes, in other words, the model fit. For some straightforward datasets fitting the model itself may be the entire process, but there are more additional steps and choices that can be taken into account before the model is fit (*feature selection*, *imputation*, *transformations*, etc).
+
+> It is important to focus on the **broader** *modelling process*, instead of to only pay attention to fitting a specific model. This broader process includes any preprocessing steps, the model fit itself, as well as potential post-processing activities. This more comprehensive concept of the modelling process is refereed as the ***model workflow***.
+
+***Why bind together?*** Including all significant steps in which there is estimation allows the accurately measure of performance and optimization of structural parameters (tuning) through resampling methods, which requires that all data-driven parts of the analysis are included in the validation process.
+
+***Incorporation of pre-processing to the data modelling process***. Different preprocessing steps, such as PCA, have a level of uncertainty associated with them and such a thing needs to be incorporated in the model validation and measurement. In this way, the pre-processing is considered **part of the modelling process**.
+
+### *workflow basics*
+
+The **workflow** package allows the binding of the **modeling** and **preprocessing** objects. A workflow always requires a **parsnip** model object.
+
+***And the preprocessor?*** If the model were very simple a standard R formula can be used as a preprocessor.
+
+```{r}
+
+# parsnip model object
+(lm_model <- linear_reg() |> set_engine("lm"))
+
+# workflow object
+(lm_wflow <- workflow() |> 
+    add_model(
+      # parsnip model specification
+      spec = lm_model
+      ) |> 
+    # Preprocessor
+    add_formula(
+      formula = Sale_Price ~ Longitude + Latitude
+    ))
+
+```
+
+***Fitting a workflow?*** workflows have a `fit()` method that can be used to create the model. This is denoted as a *(trained) workflow.*
+
+```{r}
+
+# workflow fit
+(lm_fit <- lm_wflow |> fit(data = ames_train))
+
+class(lm_fit)
+```
+
+***And predictions?*** We can also use the **fitted workflow** object to make predictions, following the same rules and naming conventions described for the **parsnip** package.
+
+```{r}
+
+lm_fit |> predict(new_data = ames_test)
+
+```
+
+***workflow updates?*** Both the model and preprocessor can be removed or uptaded.
+
+```{r}
+
+lm_fit |> 
+  update_model(rand_forest() |> set_engine("ranger") |> set_mode("regression")) |> 
+  update_formula(formula = Sale_Price ~ Longitude)
+
+```
+
+***Adding raw variables to the workflow()***. Along with the `add_model()` and `add_formula()` there is another interface that allows to pass data to the model; the `add_variable()` function which works as a preprocessor. Because there can not be two preprocessor in the same workflow is that either the *formula* or the *variables* need to be removed.
+
+> If you would like the underlying modeling method to do what it would normally do with the data, `add_variables()` can be a helpful interface facilitating more complex model specifications. However, there are certain models that expect the user to make certain changes in the data so a *formula* or *recipe* interface will typically be a better choice. *Recipes* are a more powerful preprocessor that can also be added to a workflow.
+
+The tidy selectors work! we could even use `everything()`; if any of the outcome variables are specified in the predictors argument they will be quietly removed. When this workflow is fitted the specification assembles these data **unaltered** into a data frame and passes it to the underlying function.
+
+```{r}
+
+# add_variable() preprocessor
+(lm_wflow <- lm_wflow |> 
+  # removes the prior preprocessing
+  remove_formula() |> 
+  add_variables(
+    outcomes = Sale_Price,
+    # tidy selectors
+    predictors = c(ends_with("tude"))
+  ))
+
+# fitting new workflow
+lm_wflow |> fit(data = ames_train)
+
+```
+
+## *How does the `workflow()`* *handles the formula?*
+
+The formula enables to properly encode the original data into an analysis ready format. However, there are many statistical methods that require different types of encoding (multilevel models, special in-line functions, not encoding the same way, etc). A workflow is a general purpose interface, so when `add_formula()` is used how should the workflow pre-process the data since this step is model dependent?
+
+The **parsnip** package understand what the modeling function (engine) would do: leaving the predictors columns that are factors as-is for example. The requirements of the package engine are embedded into the model specification object.
+
+#### ***Special formulas and in-line functions***
+
+A number of **multilevel models** have standardized on a formula specification devised in the `lme4` package. *What is the problem?* Standard R methods can not properly process this formula. This means that the **special formula** has to be processed by the underlying package code, not the standard `model.matrix()` approach. Even if this formula could be used with `model.matrix()` it would still present a problem since the formula also specifies the statistical attributes of the model.
+
+***What is the solution to this problem in workflow?*** Giving a supplementary model formula that can be passed to `add_model()`. The `add_variables()` specification provides the **bare column names** and then the **actual formula** given to the model is set with `add_model()`.
+
+```{r}
+
+library(multilevelmod)
+
+(multilevel_spec <- linear_reg() |> set_engine("lmer"))
+
+(multilevel_wflow <- workflow() |> 
+    # Pass the data along as-is:
+    add_variables(
+      outcomes = distance,
+      predictors = c(Sex, age, Subject)
+    ) |> 
+    add_model(
+      spec = multilevel_spec,
+      # This formula is given to the model
+      formula = distance ~ Sex + (age | Subject)
+    ))
+
+(multilevel_fit <- multilevel_wflow |> fit(data = Orthodont))
+
+```
+
+Or use the in-line `strata()` function from the **survival** package for survival analysis.
+
+```{r}
+
+library(censored)
+
+(parametric_spec <- survival_reg())
+
+(parametric_wflow <- workflow() |> 
+    add_variables(
+      outcomes =c(fustat, futime),
+      predictors = c(age, rx)
+    ) |> 
+    add_model(
+      spec = parametric_spec,
+      formula = Surv(futime, fustat) ~ age + strata(rx)
+    ))
+
+(parametric_fit <- parametric_wflow |> fit(data = ovarian))
+
+```
+
+## *workflowsets: Creating multiple workflows at once*
+
+There are some situations where the data require numerous attempts to find an appropriate model requiring the user to create multiple model specifications. In these type of situations, as well as in others, it can be tedious to create a lot of workflows from different sets of preprocessors and/or model specifications. The **workflowset** package creates combinations of workflow components: a list of **preprocessors** (formulas, dplyr selectors, or feature engineering recipes) can be combined with a list of **model** **specifications**, resulting in a set of workflows.
+
+For example, we can create a set of *formulas* in a list object. These representations can be crosses with one or more models using the `workflow_set()` function.
+
+```{r}
+
+library(workflowsets)
+
+# List of formulas
+(location <- list(
+  longitude = Sale_Price ~ Longitude,
+  latitude = Sale_Price ~ Latitude,
+  coords = Sale_Price ~ Longitude + Latitude,
+  neighborhood = Sale_Price ~ Neighborhood
+))
+
+# workflowset
+(location_models <- workflow_set(
+  preproc = location,
+  models = list(lm = lm_model)
+))
+
+# structure of the workflow_set object
+location_models |> glimpse()
+
+# ...extraction of a single workflow
+location_models |> extract_workflow(id = "coords_lm")
+
+```
+
+Workflowsets are mostly designed to work with resampling. The columns `option` and `result` are populated with specific types of objects that result from the resampling. We can create model fits for each formula and save them in a new column called `fit` with basic `dplyr` and `purrr`. There's an easier, better approach to fit workflow sets that will be introduced later.
+
+```{r}
+
+# Train workflows
+(location_models <- location_models |> 
+    mutate(fit = map(info, ~ fit(.x |> pluck("workflow", 1), ames_train))))
+
+# Obtain specific fitted workflows
+location_models |> pluck("fit", 1)
+
+```
+
+#### ***Evaluating the test set***
+
+When we have settled on a final model we can use a convenience function called `last_fit()` that will *fit* the model to the entire training set and *evaluate* it with the testing set. `last_fit()` takes the **data split** as an input, not a data frame, it uses the split to generate the training and test sets for the final fitting and evaluation and puts them together in a **last_fit object**.
+
+```{r}
+
+# Last fit
+(final_lm_res <- last_fit(object = lm_wflow, split = ames_split))
+
+# last_fit object
+final_lm_res |> class()
+
+```
+
+The `.workflow` column contains the **fitted workflow**. We can extract it from the **last_fit**
+
+**object** through the `extract_workflow()` function.
+
+```{r}
+
+# Extracting the workflow
+(fitted_lm_wflow <- extract_workflow(final_lm_res))
+
+```
+
+In the same way, we can extract the **metrics** and **predictions** from the **last_fit** object through `collect_metrics()` and `collect_predictions()`, respectively.
+
+```{r}
+
+# collect_metrics()
+collect_metrics(final_lm_res)
+
+# collect_predictions()
+collect_predictions(final_lm_res)
+
+```
+
+```{r Summary}
+library(tidymodels)
+data(ames)
+
+ames <- mutate(ames, Sale_Price = log10(Sale_Price))
+
+set.seed(502)
+ames_split <- initial_split(ames, prop = 0.80, strata = Sale_Price)
+ames_train <- training(ames_split)
+ames_test  <-  testing(ames_split)
+
+lm_model <- linear_reg() %>% set_engine("lm")
+
+lm_wflow <- 
+  workflow() %>% 
+  add_model(lm_model) %>% 
+  add_variables(outcome = Sale_Price, predictors = c(Longitude, Latitude))
+
+lm_fit <- fit(lm_wflow, ames_train)
+```
+
+# *8 Feature Engineering with recipes*
